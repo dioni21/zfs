@@ -774,65 +774,16 @@ zfs_secpolicy_send_new(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
 	    ZFS_DELEG_PERM_SEND, cr));
 }
 
-#ifdef HAVE_SMB_SHARE
-/* ARGSUSED */
-static int
-zfs_secpolicy_deleg_share(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
-{
-	vnode_t *vp;
-	int error;
-
-	if ((error = lookupname(zc->zc_value, UIO_SYSSPACE,
-	    NO_FOLLOW, NULL, &vp)) != 0)
-		return (error);
-
-	/* Now make sure mntpnt and dataset are ZFS */
-
-	if (vp->v_vfsp->vfs_fstype != zfsfstype ||
-	    (strcmp((char *)refstr_value(vp->v_vfsp->vfs_resource),
-	    zc->zc_name) != 0)) {
-		VN_RELE(vp);
-		return (SET_ERROR(EPERM));
-	}
-
-	VN_RELE(vp);
-	return (dsl_deleg_access(zc->zc_name,
-	    ZFS_DELEG_PERM_SHARE, cr));
-}
-#endif /* HAVE_SMB_SHARE */
-
 int
 zfs_secpolicy_share(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
 {
-#ifdef HAVE_SMB_SHARE
-	if (!INGLOBALZONE(curproc))
-		return (SET_ERROR(EPERM));
-
-	if (secpolicy_nfs(cr) == 0) {
-		return (0);
-	} else {
-		return (zfs_secpolicy_deleg_share(zc, innvl, cr));
-	}
-#else
 	return (SET_ERROR(ENOTSUP));
-#endif /* HAVE_SMB_SHARE */
 }
 
 int
 zfs_secpolicy_smb_acl(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
 {
-#ifdef HAVE_SMB_SHARE
-	if (!INGLOBALZONE(curproc))
-		return (SET_ERROR(EPERM));
-
-	if (secpolicy_smb(cr) == 0) {
-		return (0);
-	} else {
-		return (zfs_secpolicy_deleg_share(zc, innvl, cr));
-	}
-#else
 	return (SET_ERROR(ENOTSUP));
-#endif /* HAVE_SMB_SHARE */
 }
 
 static int
@@ -3834,7 +3785,6 @@ zfs_ioc_pool_discard_checkpoint(const char *poolname, nvlist_t *innvl,
 /*
  * inputs:
  * zc_name		name of dataset to destroy
- * zc_objset_type	type of objset
  * zc_defer_destroy	mark for deferred destroy
  *
  * outputs:		none
@@ -3842,9 +3792,17 @@ zfs_ioc_pool_discard_checkpoint(const char *poolname, nvlist_t *innvl,
 static int
 zfs_ioc_destroy(zfs_cmd_t *zc)
 {
+	objset_t *os;
+	dmu_objset_type_t ost;
 	int err;
 
-	if (zc->zc_objset_type == DMU_OST_ZFS)
+	err = dmu_objset_hold(zc->zc_name, FTAG, &os);
+	if (err != 0)
+		return (err);
+	ost = dmu_objset_type(os);
+	dmu_objset_rele(os, FTAG);
+
+	if (ost == DMU_OST_ZFS)
 		zfs_unmount_snap(zc->zc_name);
 
 	if (strchr(zc->zc_name, '@')) {
@@ -3966,8 +3924,11 @@ recursive_unmount(const char *fsname, void *arg)
 static int
 zfs_ioc_rename(zfs_cmd_t *zc)
 {
+	objset_t *os;
+	dmu_objset_type_t ost;
 	boolean_t recursive = zc->zc_cookie & 1;
 	char *at;
+	int err;
 
 	/* "zfs rename" from and to ...%recv datasets should both fail */
 	zc->zc_name[sizeof (zc->zc_name) - 1] = '\0';
@@ -3977,6 +3938,12 @@ zfs_ioc_rename(zfs_cmd_t *zc)
 	    strchr(zc->zc_name, '%') || strchr(zc->zc_value, '%'))
 		return (SET_ERROR(EINVAL));
 
+	err = dmu_objset_hold(zc->zc_name, FTAG, &os);
+	if (err != 0)
+		return (err);
+	ost = dmu_objset_type(os);
+	dmu_objset_rele(os, FTAG);
+
 	at = strchr(zc->zc_name, '@');
 	if (at != NULL) {
 		/* snaps must be in same fs */
@@ -3985,7 +3952,7 @@ zfs_ioc_rename(zfs_cmd_t *zc)
 		if (strncmp(zc->zc_name, zc->zc_value, at - zc->zc_name + 1))
 			return (SET_ERROR(EXDEV));
 		*at = '\0';
-		if (zc->zc_objset_type == DMU_OST_ZFS) {
+		if (ost == DMU_OST_ZFS) {
 			error = dmu_objset_find(zc->zc_name,
 			    recursive_unmount, at + 1,
 			    recursive ? DS_FIND_CHILDREN : 0);
@@ -5615,159 +5582,10 @@ zfs_ioc_diff(zfs_cmd_t *zc)
 	return (error);
 }
 
-/*
- * Remove all ACL files in shares dir
- */
-#ifdef HAVE_SMB_SHARE
-static int
-zfs_smb_acl_purge(znode_t *dzp)
-{
-	zap_cursor_t	zc;
-	zap_attribute_t	zap;
-	zfsvfs_t *zfsvfs = ZTOZSB(dzp);
-	int error;
-
-	for (zap_cursor_init(&zc, zfsvfs->z_os, dzp->z_id);
-	    (error = zap_cursor_retrieve(&zc, &zap)) == 0;
-	    zap_cursor_advance(&zc)) {
-		if ((error = VOP_REMOVE(ZTOV(dzp), zap.za_name, kcred,
-		    NULL, 0)) != 0)
-			break;
-	}
-	zap_cursor_fini(&zc);
-	return (error);
-}
-#endif /* HAVE_SMB_SHARE */
-
 static int
 zfs_ioc_smb_acl(zfs_cmd_t *zc)
 {
-#ifdef HAVE_SMB_SHARE
-	vnode_t *vp;
-	znode_t *dzp;
-	vnode_t *resourcevp = NULL;
-	znode_t *sharedir;
-	zfsvfs_t *zfsvfs;
-	nvlist_t *nvlist;
-	char *src, *target;
-	vattr_t vattr;
-	vsecattr_t vsec;
-	int error = 0;
-
-	if ((error = lookupname(zc->zc_value, UIO_SYSSPACE,
-	    NO_FOLLOW, NULL, &vp)) != 0)
-		return (error);
-
-	/* Now make sure mntpnt and dataset are ZFS */
-
-	if (vp->v_vfsp->vfs_fstype != zfsfstype ||
-	    (strcmp((char *)refstr_value(vp->v_vfsp->vfs_resource),
-	    zc->zc_name) != 0)) {
-		VN_RELE(vp);
-		return (SET_ERROR(EINVAL));
-	}
-
-	dzp = VTOZ(vp);
-	zfsvfs = ZTOZSB(dzp);
-	ZFS_ENTER(zfsvfs);
-
-	/*
-	 * Create share dir if its missing.
-	 */
-	mutex_enter(&zfsvfs->z_lock);
-	if (zfsvfs->z_shares_dir == 0) {
-		dmu_tx_t *tx;
-
-		tx = dmu_tx_create(zfsvfs->z_os);
-		dmu_tx_hold_zap(tx, MASTER_NODE_OBJ, TRUE,
-		    ZFS_SHARES_DIR);
-		dmu_tx_hold_zap(tx, DMU_NEW_OBJECT, FALSE, NULL);
-		error = dmu_tx_assign(tx, TXG_WAIT);
-		if (error != 0) {
-			dmu_tx_abort(tx);
-		} else {
-			error = zfs_create_share_dir(zfsvfs, tx);
-			dmu_tx_commit(tx);
-		}
-		if (error != 0) {
-			mutex_exit(&zfsvfs->z_lock);
-			VN_RELE(vp);
-			ZFS_EXIT(zfsvfs);
-			return (error);
-		}
-	}
-	mutex_exit(&zfsvfs->z_lock);
-
-	ASSERT(zfsvfs->z_shares_dir);
-	if ((error = zfs_zget(zfsvfs, zfsvfs->z_shares_dir, &sharedir)) != 0) {
-		VN_RELE(vp);
-		ZFS_EXIT(zfsvfs);
-		return (error);
-	}
-
-	switch (zc->zc_cookie) {
-	case ZFS_SMB_ACL_ADD:
-		vattr.va_mask = AT_MODE|AT_UID|AT_GID|AT_TYPE;
-		vattr.va_mode = S_IFREG|0777;
-		vattr.va_uid = 0;
-		vattr.va_gid = 0;
-
-		vsec.vsa_mask = VSA_ACE;
-		vsec.vsa_aclentp = &full_access;
-		vsec.vsa_aclentsz = sizeof (full_access);
-		vsec.vsa_aclcnt = 1;
-
-		error = VOP_CREATE(ZTOV(sharedir), zc->zc_string,
-		    &vattr, EXCL, 0, &resourcevp, kcred, 0, NULL, &vsec);
-		if (resourcevp)
-			VN_RELE(resourcevp);
-		break;
-
-	case ZFS_SMB_ACL_REMOVE:
-		error = VOP_REMOVE(ZTOV(sharedir), zc->zc_string, kcred,
-		    NULL, 0);
-		break;
-
-	case ZFS_SMB_ACL_RENAME:
-		if ((error = get_nvlist(zc->zc_nvlist_src,
-		    zc->zc_nvlist_src_size, zc->zc_iflags, &nvlist)) != 0) {
-			VN_RELE(vp);
-			VN_RELE(ZTOV(sharedir));
-			ZFS_EXIT(zfsvfs);
-			return (error);
-		}
-		if (nvlist_lookup_string(nvlist, ZFS_SMB_ACL_SRC, &src) ||
-		    nvlist_lookup_string(nvlist, ZFS_SMB_ACL_TARGET,
-		    &target)) {
-			VN_RELE(vp);
-			VN_RELE(ZTOV(sharedir));
-			ZFS_EXIT(zfsvfs);
-			nvlist_free(nvlist);
-			return (error);
-		}
-		error = VOP_RENAME(ZTOV(sharedir), src, ZTOV(sharedir), target,
-		    kcred, NULL, 0);
-		nvlist_free(nvlist);
-		break;
-
-	case ZFS_SMB_ACL_PURGE:
-		error = zfs_smb_acl_purge(sharedir);
-		break;
-
-	default:
-		error = SET_ERROR(EINVAL);
-		break;
-	}
-
-	VN_RELE(vp);
-	VN_RELE(ZTOV(sharedir));
-
-	ZFS_EXIT(zfsvfs);
-
-	return (error);
-#else
 	return (SET_ERROR(ENOTSUP));
-#endif /* HAVE_SMB_SHARE */
 }
 
 /*
@@ -7272,12 +7090,12 @@ static const struct file_operations zfsdev_fops = {
 };
 
 static struct miscdevice zfs_misc = {
-	.minor		= ZFS_MINOR,
+	.minor		= ZFS_DEVICE_MINOR,
 	.name		= ZFS_DRIVER,
 	.fops		= &zfsdev_fops,
 };
 
-MODULE_ALIAS_MISCDEV(ZFS_MINOR);
+MODULE_ALIAS_MISCDEV(ZFS_DEVICE_MINOR);
 MODULE_ALIAS("devname:zfs");
 
 static int
@@ -7298,7 +7116,7 @@ zfs_attach(void)
 		 */
 		printk(KERN_INFO "ZFS: misc_register() with static minor %d "
 		    "failed %d, retrying with MISC_DYNAMIC_MINOR\n",
-		    ZFS_MINOR, error);
+		    ZFS_DEVICE_MINOR, error);
 
 		zfs_misc.minor = MISC_DYNAMIC_MINOR;
 		error = misc_register(&zfs_misc);

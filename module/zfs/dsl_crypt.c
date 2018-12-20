@@ -15,6 +15,7 @@
 
 /*
  * Copyright (c) 2017, Datto, Inc. All rights reserved.
+ * Copyright (c) 2018 by Delphix. All rights reserved.
  */
 
 #include <sys/dsl_crypt.h>
@@ -757,7 +758,7 @@ spa_keystore_load_wkey(const char *dsname, dsl_crypto_params_t *dcp,
 	dsl_crypto_key_t *dck = NULL;
 	dsl_wrapping_key_t *wkey = dcp->cp_wkey;
 	dsl_pool_t *dp = NULL;
-	uint64_t keyformat, salt, iters;
+	uint64_t rddobj, keyformat, salt, iters;
 
 	/*
 	 * We don't validate the wrapping key's keyformat, salt, or iters
@@ -774,7 +775,7 @@ spa_keystore_load_wkey(const char *dsname, dsl_crypto_params_t *dcp,
 		goto error;
 
 	if (!spa_feature_is_enabled(dp->dp_spa, SPA_FEATURE_ENCRYPTION)) {
-		ret = (SET_ERROR(ENOTSUP));
+		ret = SET_ERROR(ENOTSUP);
 		goto error;
 	}
 
@@ -782,6 +783,13 @@ spa_keystore_load_wkey(const char *dsname, dsl_crypto_params_t *dcp,
 	ret = dsl_dir_hold(dp, dsname, FTAG, &dd, NULL);
 	if (ret != 0) {
 		dd = NULL;
+		goto error;
+	}
+
+	/* confirm that dd is the encryption root */
+	ret = dsl_dir_get_encryption_root_ddobj(dd, &rddobj);
+	if (ret != 0 || rddobj != dd->dd_object) {
+		ret = SET_ERROR(EINVAL);
 		goto error;
 	}
 
@@ -1938,7 +1946,8 @@ dsl_dataset_create_crypt_sync(uint64_t dsobj, dsl_dir_t *dd,
 	VERIFY0(zap_add(dp->dp_meta_objset, dd->dd_object,
 	    DD_FIELD_CRYPTO_KEY_OBJ, sizeof (uint64_t), 1, &dd->dd_crypto_obj,
 	    tx));
-	dsl_dataset_activate_feature(dsobj, SPA_FEATURE_ENCRYPTION, tx);
+	dsl_dataset_activate_feature(dsobj, SPA_FEATURE_ENCRYPTION,
+	    (void *)B_TRUE, tx);
 
 	/*
 	 * If we inherited the wrapping key we release our reference now.
@@ -2249,8 +2258,8 @@ dsl_crypto_recv_raw_key_sync(dsl_dataset_t *ds, nvlist_t *nvl, dmu_tx_t *tx)
 		    sizeof (uint64_t), 1, &version, tx));
 
 		dsl_dataset_activate_feature(ds->ds_object,
-		    SPA_FEATURE_ENCRYPTION, tx);
-		ds->ds_feature_inuse[SPA_FEATURE_ENCRYPTION] = B_TRUE;
+		    SPA_FEATURE_ENCRYPTION, (void *)B_TRUE, tx);
+		ds->ds_feature[SPA_FEATURE_ENCRYPTION] = (void *)B_TRUE;
 
 		/* save the dd_crypto_obj on disk */
 		VERIFY0(zap_add(mos, dd->dd_object, DD_FIELD_CRYPTO_KEY_OBJ,

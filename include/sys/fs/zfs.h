@@ -665,6 +665,9 @@ typedef struct zpool_load_policy {
 #define	ZPOOL_CONFIG_VDEV_ASYNC_AGG_W_HISTO	"vdev_async_agg_w_histo"
 #define	ZPOOL_CONFIG_VDEV_AGG_SCRUB_HISTO	"vdev_agg_scrub_histo"
 
+/* Number of slow IOs */
+#define	ZPOOL_CONFIG_VDEV_SLOW_IOS		"vdev_slow_ios"
+
 /* vdev enclosure sysfs path */
 #define	ZPOOL_CONFIG_VDEV_ENC_SYSFS_PATH	"vdev_enc_sysfs_path"
 
@@ -710,12 +713,14 @@ typedef struct zpool_load_policy {
 #define	ZPOOL_CONFIG_VDEV_TOP_ZAP	"com.delphix:vdev_zap_top"
 #define	ZPOOL_CONFIG_VDEV_LEAF_ZAP	"com.delphix:vdev_zap_leaf"
 #define	ZPOOL_CONFIG_HAS_PER_VDEV_ZAPS	"com.delphix:has_per_vdev_zaps"
+#define	ZPOOL_CONFIG_RESILVER_DEFER	"com.datto:resilver_defer"
 #define	ZPOOL_CONFIG_CACHEFILE		"cachefile"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_STATE		"mmp_state"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_TXG		"mmp_txg"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_HOSTNAME	"mmp_hostname"	/* not stored on disk */
 #define	ZPOOL_CONFIG_MMP_HOSTID		"mmp_hostid"	/* not stored on disk */
 #define	ZPOOL_CONFIG_ALLOCATION_BIAS	"alloc_bias"	/* not stored on disk */
+#define	ZPOOL_CONFIG_EXPANSION_TIME	"expansion_time"	/* not stored */
 
 /*
  * The persistent vdev state is stored as separate values rather than a single
@@ -988,6 +993,8 @@ typedef struct vdev_stat {
 	uint64_t	vs_scan_processed;	/* scan processed bytes	*/
 	uint64_t	vs_fragmentation;	/* device fragmentation */
 	uint64_t	vs_checkpoint_space;    /* checkpoint-consumed space */
+	uint64_t	vs_resilver_deferred;	/* resilver deferred	*/
+	uint64_t	vs_slow_ios;		/* slow IOs */
 } vdev_stat_t;
 
 /*
